@@ -67,12 +67,35 @@ function createApp({ secret, rtmpPort = 1935, hlsPort = 8888, mediaHost = '127.0
         response.writeHead(404);
         return response.end();
       }
-      const upstream = http.get({ host: mediaHost, port: hlsPort, path: '/' + suffix }, (media) => {
-        response.writeHead(media.statusCode || 502, {
+      // MediaMTX (>= 1.18) hands HLS viewers a three-part handshake: a 302 whose
+      // Location carries ?cookieCheck=1, a Set-Cookie, and a per-viewer session
+      // identifier that travels either in a cookie or in a ?session= query on the
+      // playlist and segment URLs. Every one of those has to survive this proxy,
+      // otherwise the player receives an unusable 302 and can never load a
+      // playlist even while the Quest is publishing.
+      const upstreamHeaders = {};
+      if (request.headers.cookie) upstreamHeaders.cookie = request.headers.cookie;
+      const upstream = http.get({
+        host: mediaHost,
+        port: hlsPort,
+        path: '/' + suffix + (url.search || ''),
+        headers: upstreamHeaders,
+      }, (media) => {
+        const outgoing = {
           'Content-Type': media.headers['content-type'] || 'application/octet-stream',
           'Cache-Control': 'no-store',
           'Access-Control-Allow-Origin': '*',
-        });
+        };
+        // Location is an absolute path on the private media server; re-add the
+        // public /media prefix so the browser redirects to a reachable URL.
+        const location = media.headers.location;
+        if (location) {
+          outgoing.Location = location.startsWith('http') || location.startsWith('/media/')
+            ? location
+            : '/media' + (location.startsWith('/') ? location : '/' + location);
+        }
+        if (media.headers['set-cookie']) outgoing['Set-Cookie'] = media.headers['set-cookie'];
+        response.writeHead(media.statusCode || 502, outgoing);
         media.pipe(response);
       });
       upstream.once('error', () => {
