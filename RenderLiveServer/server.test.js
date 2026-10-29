@@ -63,6 +63,51 @@ test('the watch page serves its assets and the live HLS path', async (t) => {
   assert.equal((await fetch(base + '/media/live/../../admin')).status, 404);
 });
 
+test('the activity snapshot endpoint authenticates writes and serves reads', async (t) => {
+  const backend = net.createServer();
+  backend.listen(0, '127.0.0.1');
+  await once(backend, 'listening');
+  t.after(() => backend.close());
+
+  const app = createApp({ secret, rtmpPort: backend.address().port });
+  app.listen(0, '127.0.0.1');
+  await once(app, 'listening');
+  t.after(() => app.close());
+  const base = `http://127.0.0.1:${app.address().port}`;
+
+  // Nothing has been reported yet, so the page must be told so explicitly.
+  const empty = await (await fetch(base + '/api/presence')).json();
+  assert.equal(empty.presence, null);
+  assert.equal(empty.publishing, false);
+
+  // Only the STREAM_KEY holder may write.
+  const anonymous = await fetch(base + '/api/presence', { method: 'POST', body: '{}' });
+  assert.equal(anonymous.status, 401);
+
+  const snapshot = {
+    details: 'Song - Artist',
+    state: 'Status: Playing',
+    buttons: [{ label: 'Watch Live', url: 'https://example.com/live' }],
+  };
+  const accepted = await fetch(base + '/api/presence', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(snapshot),
+  });
+  assert.equal(accepted.status, 204);
+
+  const read = await (await fetch(base + '/api/presence')).json();
+  assert.deepEqual(read.presence, snapshot);
+  assert.equal(typeof read.updatedAt, 'number');
+
+  const malformed = await fetch(base + '/api/presence', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${secret}` },
+    body: 'not json',
+  });
+  assert.equal(malformed.status, 400);
+});
+
 test('the HLS proxy preserves the MediaMTX cookieCheck handshake', async (t) => {
   const backend = net.createServer();
   backend.listen(0, '127.0.0.1');

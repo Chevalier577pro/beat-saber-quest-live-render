@@ -14,7 +14,18 @@
       <video id="video" controls autoplay muted playsinline></video>
       <div id="overlay" class="overlay"><div class="pulse"></div><h1>Le live commencera bientôt</h1><p>Cette page se met à jour automatiquement.</p></div>
     </section>
-    <p id="status" class="status">Recherche du direct…</p>
+    <p id="status" class="status">Recherche du direct...</p>
+    <section id="presence" class="presence hidden">
+      <img id="presence-cover" class="cover" alt="">
+      <div class="presence-body">
+        <p id="presence-details" class="details"></p>
+        <p id="presence-state" class="state-line"></p>
+        <div class="progress"><div id="presence-progress" class="progress-fill"></div></div>
+        <p id="presence-time" class="meta"></p>
+        <p id="presence-party" class="meta"></p>
+        <div id="presence-buttons" class="buttons"></div>
+      </div>
+    </section>
   </main>
   <script src="/hls.min.js"></script>
   <script src="/player.js"></script>

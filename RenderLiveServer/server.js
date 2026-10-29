@@ -8,6 +8,11 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { WebSocket, WebSocketServer, createWebSocketStream } = require('ws');
 
+// An activity snapshot larger than this is refused rather than buffered.
+const MAX_PRESENCE_CHARS = 8192;
+// Without a refresh the snapshot is stale: the companion stopped reporting.
+const PRESENCE_TTL_MS = 30_000;
+
 const publicDir = path.join(__dirname, 'public');
 const files = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -32,10 +37,56 @@ function createApp({ secret, rtmpPort = 1935, hlsPort = 8888, mediaHost = '127.0
     throw new Error('STREAM_KEY must contain at least 20 characters');
   }
   let publisher = null;
+  // The latest activity snapshot forwarded by the companion. It mirrors what
+  // Discord shows, so the watch page can display the same thing.
+  let presence = null;
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 65536 });
 
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, 'http://localhost');
+
+    // The companion forwards the current activity here. Writing is restricted to
+    // the holder of STREAM_KEY; reading is public because the watch page is.
+    if (request.method === 'POST' && url.pathname === '/api/presence') {
+      if (!authorized(request.headers.authorization, secret)) {
+        response.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        return response.end('{"status":"error","error":"unauthorized"}');
+      }
+      let body = '';
+      let overflow = false;
+      request.setEncoding('utf8');
+      request.on('data', (chunk) => {
+        if (overflow) return;
+        body += chunk;
+        if (body.length > MAX_PRESENCE_CHARS) {
+          overflow = true;
+          body = '';
+        }
+      });
+      request.on('error', () => response.destroy());
+      request.on('end', () => {
+        if (overflow) {
+          response.writeHead(413, { 'Cache-Control': 'no-store' });
+          return response.end();
+        }
+        let parsed;
+        try {
+          parsed = JSON.parse(body);
+        } catch (error) {
+          response.writeHead(400, { 'Cache-Control': 'no-store' });
+          return response.end();
+        }
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          response.writeHead(400, { 'Cache-Control': 'no-store' });
+          return response.end();
+        }
+        presence = { receivedAt: Date.now(), body: parsed };
+        response.writeHead(204, { 'Cache-Control': 'no-store' });
+        response.end();
+      });
+      return;
+    }
+
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       response.writeHead(405, { Allow: 'GET, HEAD' });
       return response.end();
@@ -59,6 +110,15 @@ function createApp({ secret, rtmpPort = 1935, hlsPort = 8888, mediaHost = '127.0
     if (url.pathname === '/api/status') {
       response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       return response.end(JSON.stringify({ publishing: publisher !== null }));
+    }
+    if (url.pathname === '/api/presence') {
+      const fresh = presence !== null && Date.now() - presence.receivedAt <= PRESENCE_TTL_MS;
+      response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return response.end(JSON.stringify({
+        publishing: publisher !== null,
+        presence: fresh ? presence.body : null,
+        updatedAt: fresh ? presence.receivedAt : null,
+      }));
     }
     if (url.pathname.startsWith('/media/')) {
       // Only the one public live path is readable. Keep the media server API private.
@@ -115,7 +175,7 @@ function createApp({ secret, rtmpPort = 1935, hlsPort = 8888, mediaHost = '127.0
       'Content-Type': item[1],
       'Cache-Control': item[0].endsWith('index.html') ? 'no-store' : 'public, max-age=3600',
       'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy': "default-src 'self'; media-src 'self' blob:; connect-src 'self'; script-src 'self'; style-src 'self'",
+      'Content-Security-Policy': "default-src 'self'; media-src 'self' blob:; img-src 'self' data: https:; connect-src 'self'; script-src 'self'; style-src 'self'",
     });
     fs.createReadStream(file).pipe(response);
   });
