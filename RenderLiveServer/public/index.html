@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1020">
+  <title>Beat Saber — Live</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header><div class="brand">BEAT SABER <span>QUEST LIVE</span></div><div id="badge" class="badge">HORS LIGNE</div></header>
+    <section class="player-wrap">
+      <video id="video" controls autoplay muted playsinline></video>
+      <div id="overlay" class="overlay"><div class="pulse"></div><h1>Le live commencera bientôt</h1><p>Cette page se met à jour automatiquement.</p></div>
+    </section>
+    <p id="status" class="status">Recherche du direct…</p>
+  </main>
+  <script src="/hls.min.js"></script>
+  <script src="/player.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+logLevel: info
+rtsp: false
+rtmp: true
+rtmpAddress: 127.0.0.1:1935
+rtmpEncryption: "no"
+hls: true
+hlsAddress: 127.0.0.1:8888
+hlsVariant: mpegts
+hlsAlwaysRemux: true
+webrtc: false
+srt: false
+api: false
+metrics: false
+pprof: false
+playback: false
+paths:
+  live/quest:
+    source: publisher
+    overridePublisher: false

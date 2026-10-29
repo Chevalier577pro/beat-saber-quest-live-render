@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: quest-beat-saber-live
+    runtime: docker
+    plan: free
+    rootDir: RenderLiveServer
+    healthCheckPath: /health
+    envVars:
+      - key: STREAM_KEY
+        sync: false

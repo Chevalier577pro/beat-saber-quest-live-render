@@ -1,0 +1,151 @@
+'use strict';
+
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const http = require('node:http');
+const net = require('node:net');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+const { WebSocket, WebSocketServer, createWebSocketStream } = require('ws');
+
+const publicDir = path.join(__dirname, 'public');
+const files = new Map([
+  ['/', ['index.html', 'text/html; charset=utf-8']],
+  ['/style.css', ['style.css', 'text/css; charset=utf-8']],
+  ['/player.js', ['player.js', 'text/javascript; charset=utf-8']],
+  ['/hls.min.js', [path.join(__dirname, 'node_modules/hls.js/dist/hls.min.js'), 'text/javascript; charset=utf-8']],
+]);
+
+function authorized(header, secret) {
+  if (!header || !header.startsWith('Bearer ')) return false;
+  const supplied = Buffer.from(header.slice(7));
+  const expected = Buffer.from(secret);
+  return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+}
+
+function rejectUpgrade(socket, code, message) {
+  socket.end(`HTTP/1.1 ${code} ${message}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+}
+
+function createApp({ secret, rtmpPort = 1935, hlsPort = 8888, mediaHost = '127.0.0.1' }) {
+  if (typeof secret !== 'string' || secret.length < 20) {
+    throw new Error('STREAM_KEY must contain at least 20 characters');
+  }
+  let publisher = null;
+  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 65536 });
+
+  const server = http.createServer((request, response) => {
+    const url = new URL(request.url, 'http://localhost');
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      response.writeHead(405, { Allow: 'GET, HEAD' });
+      return response.end();
+    }
+    if (url.pathname === '/health') {
+      const probe = net.connect({ host: mediaHost, port: rtmpPort });
+      probe.setTimeout(2000);
+      let done = false;
+      const finish = (code) => {
+        if (done) return;
+        done = true;
+        probe.destroy();
+        response.writeHead(code, { 'Cache-Control': 'no-store' });
+        response.end(code === 200 ? 'ok' : 'media server unavailable');
+      };
+      probe.once('connect', () => finish(200));
+      probe.once('error', () => finish(503));
+      probe.once('timeout', () => finish(503));
+      return;
+    }
+    if (url.pathname === '/api/status') {
+      response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return response.end(JSON.stringify({ publishing: publisher !== null }));
+    }
+    if (url.pathname.startsWith('/media/')) {
+      // Only the one public live path is readable. Keep the media server API private.
+      const suffix = url.pathname.slice('/media/'.length);
+      if (!/^live\/quest\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(suffix) || suffix.includes('..')) {
+        response.writeHead(404);
+        return response.end();
+      }
+      const upstream = http.get({ host: mediaHost, port: hlsPort, path: '/' + suffix }, (media) => {
+        response.writeHead(media.statusCode || 502, {
+          'Content-Type': media.headers['content-type'] || 'application/octet-stream',
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        });
+        media.pipe(response);
+      });
+      upstream.once('error', () => {
+        if (!response.headersSent) response.writeHead(503);
+        response.end();
+      });
+      response.once('close', () => upstream.destroy());
+      return;
+    }
+    const item = files.get(url.pathname);
+    if (!item) {
+      response.writeHead(404);
+      return response.end();
+    }
+    const file = path.isAbsolute(item[0]) ? item[0] : path.join(publicDir, item[0]);
+    response.writeHead(200, {
+      'Content-Type': item[1],
+      'Cache-Control': item[0].endsWith('index.html') ? 'no-store' : 'public, max-age=3600',
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "default-src 'self'; media-src 'self' blob:; connect-src 'self'; script-src 'self'; style-src 'self'",
+    });
+    fs.createReadStream(file).pipe(response);
+  });
+
+  server.on('upgrade', (request, socket, head) => {
+    const url = new URL(request.url, 'http://localhost');
+    if (url.pathname !== '/ingest') return rejectUpgrade(socket, 404, 'Not Found');
+    if (!authorized(request.headers.authorization, secret)) return rejectUpgrade(socket, 401, 'Unauthorized');
+    if (publisher !== null) return rejectUpgrade(socket, 409, 'Conflict');
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      publisher = ws;
+      wss.emit('connection', ws);
+    });
+  });
+
+  wss.on('connection', (ws) => {
+    const media = net.connect({ host: mediaHost, port: rtmpPort });
+    const tunnel = createWebSocketStream(ws, { highWaterMark: 64 * 1024 });
+    tunnel.pipe(media).pipe(tunnel);
+    const close = () => {
+      if (publisher === ws) publisher = null;
+      media.destroy();
+      tunnel.destroy();
+      if (ws.readyState === WebSocket.OPEN) ws.close();
+    };
+    media.once('error', close);
+    media.once('close', close);
+    tunnel.once('error', close);
+    ws.once('close', close);
+  });
+
+  return server;
+}
+
+if (require.main === module) {
+  const server = createApp({ secret: process.env.STREAM_KEY });
+  let media;
+  if (process.env.START_MEDIA_SERVER !== '0') {
+    media = spawn('/usr/local/bin/mediamtx', ['/app/mediamtx.yml'], { stdio: 'inherit' });
+    media.once('error', (error) => {
+      console.error('Media server failed:', error.message);
+      process.exit(1);
+    });
+    media.once('exit', (code) => {
+      console.error('Media server exited:', code);
+      process.exit(1);
+    });
+  }
+  server.listen(Number(process.env.PORT) || 10000, '0.0.0.0');
+  process.on('SIGTERM', () => {
+    server.close();
+    if (media) media.kill('SIGTERM');
+  });
+}
+
+module.exports = { createApp };
