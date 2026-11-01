@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<title>Beat Saber Live Replay</title>
+<style>
+body{margin:0;background:#0b1020;color:#eee;font-family:system-ui}
+#app{display:grid;grid-template-columns:1fr 280px;height:100vh}
+canvas{display:block;width:100%;height:100%}
+#panel{padding:12px;border-left:1px solid #223}
+button,select{margin:4px;padding:6px 10px;background:#1a2342;color:#eee;border:1px solid #334}
+</style>
+</head>
+<body>
+<div id="app">
+<canvas id="c"></canvas>
+<div id="panel">
+<h3>Replay Live</h3>
+<button id="start">Démarrer</button>
+<button id="stop">Arrêter</button>
+<label>Caméra
+<select id="cam">
+<option value="third">Troisième personne</option>
+<option value="free">Libre</option>
+<option value="side">Latérale</option>
+<option value="front">Frontale</option>
+</select>
+</label>
+<label>Qualité
+<select id="qual">
+<option value="high">Haute</option>
+<option value="med">Moyenne</option>
+<option value="low">Basse</option>
+</select>
+</label>
+<div id="status">En attente...</div>
+</div>
+</div>
+<script type="module">
+import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+import {OrbitControls} from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b1020);
+const camera = new THREE.PerspectiveCamera(60, innerWidth/(innerHeight), 0.1, 1000);
+camera.position.set(0,2,6);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+scene.add(new THREE.HemisphereLight(0xffffff,0x444444,1.2));
+const dir = new THREE.DirectionalLight(0xffffff,1); dir.position.set(5,10,7); scene.add(dir);
+
+// Player rig
+const player = new THREE.Group(); scene.add(player);
+const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.25,0.9,4,16), new THREE.MeshStandardMaterial({color:0x8888ff}));
+body.position.y = 1.0; player.add(body);
+const leftSaber = new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,0.6,8), new THREE.MeshStandardMaterial({color:0x00ffff}));
+const rightSaber = leftSaber.clone(); rightSaber.material = new THREE.MeshStandardMaterial({color:0xff00ff});
+player.add(leftSaber); player.add(rightSaber);
+
+const head = new THREE.Mesh(new THREE.SphereGeometry(0.12,16,16), new THREE.MeshStandardMaterial({color:0xffcc88}));
+head.position.y = 1.7; player.add(head);
+const leftHand = new THREE.Object3D(); const rightHand = new THREE.Object3D();
+player.add(leftHand); player.add(rightHand);
+leftSaber.position.set(0,0,0); leftSaber.parent = leftHand;
+rightSaber.position.set(0,0,0); rightSaber.parent = rightHand;
+
+let ws;
+function connect(){
+  const url = `ws://${location.hostname}:8081/replay`;
+  try { ws = new WebSocket(url); } catch(e){}
+  ws.onopen = ()=> setStatus('Connecté');
+  ws.onclose = ()=> { setStatus('Déconnecté'); setTimeout(connect,2000); };
+  ws.onmessage = (e)=> handleMsg(JSON.parse(e.data));
+}
+function setStatus(t){ document.getElementById('status').textContent = t; }
+function handleMsg(msg){
+  if(msg.t==='pose'){
+    const h = msg.head, l = msg.left, r = msg.right;
+    head.position.fromArray(h.p); head.quaternion.fromArray(h.q);
+    leftHand.position.fromArray(l.p); leftHand.quaternion.fromArray(l.q);
+    rightHand.position.fromArray(r.p); rightHand.quaternion.fromArray(r.q);
+  }
+}
+document.getElementById('start').onclick = connect;
+document.getElementById('stop').onclick = ()=>{ if(ws) ws.close(); };
+document.getElementById('cam').onchange = (e)=>{
+  const v = e.target.value;
+  if(v==='third') camera.position.set(0,2,6);
+  if(v==='side') camera.position.set(6,1.5,0);
+  if(v==='front') camera.position.set(0,1.5,-6);
+};
+addEventListener('resize',()=>{ renderer.setSize(innerWidth,innerHeight); camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); });
+function tick(){
+  controls.update();
+  renderer.render(scene,camera);
+  requestAnimationFrame(tick);
+}
+tick();
+</script>
+</body>
+</html>

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<title>Beat Saber Live Replay - Advanced</title>
+<style>
+body{margin:0;background:#0b1020;color:#eee;font-family:system-ui}
+#app{display:grid;grid-template-columns:1fr 300px;height:100vh}
+canvas{display:block;width:100%;height:100%}
+#panel{padding:12px;border-left:1px solid #223}
+button,select,input{margin:4px;padding:6px 10px;background:#1a2342;color:#eee;border:1px solid #334}
+label{display:block;margin-top:8px}
+</style>
+</head>
+<body>
+<div id="app">
+<canvas id="c"></canvas>
+<div id="panel">
+<h3>Replay Live 3D</h3>
+<button id="start">Démarrer</button>
+<button id="stop">Arrêter</button>
+<label>Caméra
+<select id="cam">
+<option value="third">Troisième personne</option>
+<option value="free">Libre</option>
+<option value="side">Latérale</option>
+<option value="front">Frontale</option>
+</select>
+</label>
+<label>Distance caméra <input id="dist" type="range" min="2" max="12" step="0.1" value="6"></label>
+<label>Hauteur caméra <input id="height" type="range" min="0" max="3" step="0.1" value="1.5"></label>
+<label>Qualité <select id="qual"><option value="high">Haute</option><option value="med">Moyenne</option><option value="low">Basse</option></select></label>
+<div id="status">En attente...</div>
+</div>
+</div>
+<script type="module">
+import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+import {OrbitControls} from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+const canvas=document.getElementById('c');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0x0b1020);
+const camera=new THREE.PerspectiveCamera(60,innerWidth/innerHeight,0.1,1000);
+const controls=new OrbitControls(camera,renderer.domElement); controls.enableDamping=true;
+scene.add(new THREE.HemisphereLight(0xffffff,0x444444,1.2));
+const dir=new THREE.DirectionalLight(0xffffff,1); dir.position.set(5,10,7); scene.add(dir);
+
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(20,20), new THREE.MeshStandardMaterial({color:0x111522}));
+floor.rotation.x=-Math.PI/2; scene.add(floor);
+
+const player=new THREE.Group(); scene.add(player);
+const body=new THREE.Mesh(new THREE.CapsuleGeometry(0.25,0.9,4,16), new THREE.MeshStandardMaterial({color:0x8888ff}));
+body.position.y=1.0; player.add(body);
+const head=new THREE.Mesh(new THREE.SphereGeometry(0.12,16,16), new THREE.MeshStandardMaterial({color:0xffcc88}));
+head.position.y=1.7; player.add(head);
+const leftHand=new THREE.Object3D(); const rightHand=new THREE.Object3D(); player.add(leftHand); player.add(rightHand);
+const leftSaber=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,0.6,8), new THREE.MeshStandardMaterial({color:0x00ffff}));
+const rightSaber=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,0.6,8), new THREE.MeshStandardMaterial({color:0xff00ff}));
+leftSaber.position.y=0.3; rightSaber.position.y=0.3; leftHand.add(leftSaber); rightHand.add(rightSaber);
+
+function updateCamera(){
+ const mode=document.getElementById('cam').value;
+ const d=parseFloat(document.getElementById('dist').value);
+ const h=parseFloat(document.getElementById('height').value);
+ if(mode==='third'){ camera.position.set(0,h,d); controls.target.set(0,1.2,0); }
+ if(mode==='side'){ camera.position.set(d,h,0); controls.target.set(0,1.2,0); }
+ if(mode==='front'){ camera.position.set(0,h,-d); controls.target.set(0,1.2,0); }
+ if(mode==='free'){ }
+}
+['cam','dist','height'].forEach(id=>document.getElementById(id).addEventListener('input',updateCamera));
+updateCamera();
+
+let ws;
+function connect(){
+  const host=location.hostname;
+  ws=new WebSocket(`ws://${host}:8081/replay`);
+  ws.onopen=()=>setStatus('Connecté');
+  ws.onclose=()=>setStatus('Déconnecté');
+  ws.onmessage=e=>{ try{ handle(JSON.parse(e.data)); }catch{} };
+}
+function setStatus(t){ document.getElementById('status').textContent=t; }
+function handle(msg){
+  if(msg.t==='pose'){
+    const h=msg.head,l=msg.left,r=msg.right;
+    if(h&&h.p){ head.position.fromArray(h.p); if(h.q) head.quaternion.fromArray(h.q); }
+    if(l&&l.p){ leftHand.position.fromArray(l.p); if(l.q) leftHand.quaternion.fromArray(l.q); }
+    if(r&&r.p){ rightHand.position.fromArray(r.p); if(r.q) rightHand.quaternion.fromArray(r.q); }
+  }
+}
+document.getElementById('start').onclick=connect;
+document.getElementById('stop').onclick=()=>{ if(ws) ws.close(); };
+
+addEventListener('resize',()=>{ renderer.setSize(innerWidth,innerHeight); camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); });
+function tick(){ controls.update(); renderer.render(scene,camera); requestAnimationFrame(tick); }
+tick();
+</script>
+</body>
+</html>
